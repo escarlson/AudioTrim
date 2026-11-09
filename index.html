@@ -1,0 +1,750 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio Trimmer &amp; Slicer</title>
+<meta name="description" content="Trim and slice audio files entirely in your browser. Nothing is uploaded.">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1b1f24; --muted: #66707c; --border: #d9dee5;
+    --accent: #2f6fed; --accent-text: #fff; --wave: #2f6fed; --wave-bg: #eef2fb;
+    --sel: rgba(47,111,237,.22); --marker: #e0662b; --playhead: #1b1f24; --danger: #c2362b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171b; --panel: #1d2127; --text: #e8ebef; --muted: #98a2af; --border: #323943;
+      --accent: #5b8cff; --accent-text: #0c1018; --wave: #7aa2ff; --wave-bg: #171b22;
+      --sel: rgba(91,140,255,.28); --marker: #ff9255; --playhead: #e8ebef; --danger: #ff7a6e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 1rem; margin: 0 0 10px; }
+  #drop { border: 2px dashed var(--border); border-radius: 12px; padding: 36px 16px; text-align: center; cursor: pointer; background: var(--panel); transition: border-color .15s, background .15s; }
+  #drop.over, #drop:hover { border-color: var(--accent); }
+  #drop strong { display: block; font-size: 1.05rem; margin-bottom: 4px; }
+  #drop span { color: var(--muted); }
+  #status { color: var(--muted); margin: 8px 0 0; min-height: 1.4em; }
+  #status.error { color: var(--danger); }
+  button, select, input[type=text], input[type=number] { font: inherit; color: inherit; }
+  button { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 600; }
+  button.small { padding: 4px 9px; font-size: .85rem; }
+  button.danger { color: var(--danger); }
+  input[type=text], input[type=number], select { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+  input[type=text] { width: 110px; font-variant-numeric: tabular-nums; }
+  input[type=number] { width: 80px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .row + .row { margin-top: 10px; }
+  .grow { flex: 1; }
+  .muted { color: var(--muted); }
+  .wave-wrap { position: relative; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--wave-bg); }
+  canvas#wave { display: block; width: 100%; height: 220px; cursor: crosshair; touch-action: none; }
+  input[type=range] { width: 100%; margin: 8px 0 0; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); font-size: .92rem; }
+  th { color: var(--muted); font-weight: 500; }
+  td.actions { text-align: right; white-space: nowrap; }
+  .empty { color: var(--muted); padding: 6px 0; }
+  kbd { background: var(--bg); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: .8rem; }
+  .hint { font-size: .85rem; color: var(--muted); }
+  [hidden] { display: none !important; }
+  @media (max-width: 560px) { canvas#wave { height: 170px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Audio Trimmer &amp; Slicer</h1>
+  <p class="sub">Trim, cut and split audio right in your browser. Files never leave your device.</p>
+
+  <div id="drop" tabindex="0" role="button" aria-label="Choose an audio file">
+    <strong>Drop an audio file here, or click to browse</strong>
+    <span>MP3, WAV, M4A/AAC, OGG, FLAC, and anything else your browser can decode</span>
+    <input id="file" type="file" accept="audio/*,video/mp4,video/webm" hidden>
+  </div>
+  <p id="status" role="status"></p>
+
+  <div id="editor" hidden>
+    <div class="card">
+      <div class="row">
+        <button id="play" class="primary">▶ Play</button>
+        <button id="stop">■ Stop</button>
+        <label class="row" style="gap:6px"><input id="loop" type="checkbox"> Loop</label>
+        <span class="grow"></span>
+        <span class="muted" id="fileinfo"></span>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="zoomIn" class="small" title="Zoom in">＋</button>
+        <button id="zoomOut" class="small" title="Zoom out">－</button>
+        <button id="zoomSel" class="small">Zoom to selection</button>
+        <button id="zoomFit" class="small">Fit all</button>
+        <span class="hint">Scroll wheel zooms · Shift+scroll pans</span>
+      </div>
+      <div class="wave-wrap" style="margin-top:10px"><canvas id="wave"></canvas></div>
+      <input id="pan" type="range" min="0" max="1000" value="0" aria-label="Scroll waveform">
+      <p class="hint" style="margin:8px 0 0">
+        Drag on the waveform to select · drag selection edges to adjust · click to move the playhead ·
+        <kbd>Space</kbd> play/pause · <kbd>M</kbd> add split marker · <kbd>I</kbd>/<kbd>O</kbd> set selection start/end at playhead
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Selection</h2>
+      <div class="row">
+        <label>Start <input id="selStart" type="text" placeholder="0:00.000"></label>
+        <label>End <input id="selEnd" type="text" placeholder="0:00.000"></label>
+        <span class="muted" id="selLen"></span>
+        <span class="grow"></span>
+        <button id="selAll" class="small">Select all</button>
+        <button id="selClear" class="small">Clear</button>
+      </div>
+      <div class="row">
+        <button id="expTrim" class="primary">Download selection (trim)</button>
+        <button id="expCut">Download with selection removed</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Split markers</h2>
+      <div class="row">
+        <button id="addMarker">Add marker at playhead</button>
+        <button id="markerSel" class="small">Markers at selection edges</button>
+        <button id="clearMarkers" class="small danger">Remove all</button>
+      </div>
+      <div id="segments" style="margin-top:10px"></div>
+      <div class="row">
+        <button id="expZip" class="primary">Download all slices (.zip)</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Output options</h2>
+      <div class="row">
+        <label>Format
+          <select id="fmt">
+            <optgroup label="MP3">
+              <option value="mp3-128">MP3 · 128 kbps</option>
+              <option value="mp3-192" selected>MP3 · 192 kbps</option>
+              <option value="mp3-256">MP3 · 256 kbps</option>
+              <option value="mp3-320">MP3 · 320 kbps</option>
+            </optgroup>
+            <optgroup label="WAV (lossless)">
+              <option value="16">WAV · 16-bit PCM</option>
+              <option value="24">WAV · 24-bit PCM</option>
+              <option value="32">WAV · 32-bit float</option>
+            </optgroup>
+          </select>
+        </label>
+        <label>Fade in <input id="fadeIn" type="number" min="0" max="10000" step="5" value="0"> ms</label>
+        <label>Fade out <input id="fadeOut" type="number" min="0" max="10000" step="5" value="0"> ms</label>
+      </div>
+      <p class="hint" style="margin:8px 0 0">Exports use your device's audio sample rate. MP3 is encoded in the browser with LAME (lamejs); more than two channels are reduced to the first two. Fades apply to every exported piece, which helps avoid clicks at cut points.</p>
+    </div>
+  </div>
+</main>
+
+<script src="lame.min.js"></script>
+<script>
+(() => {
+  'use strict';
+  const $ = id => document.getElementById(id);
+  const AC = window.AudioContext || window.webkitAudioContext;
+
+  // ---------- state ----------
+  let actx = null, buffer = null, baseName = 'audio';
+  let sel = null;                 // {start,end} seconds
+  let markers = [];               // sorted seconds
+  let view = { start: 0, end: 1 };
+  let playhead = 0;
+  let src = null, playInfo = null, rafId = 0;
+  let wfDirty = true;
+  const wf = document.createElement('canvas');   // cached waveform
+  const canvas = $('wave'), c2 = canvas.getContext('2d');
+  let cw = 0, ch = 0, dpr = 1;
+
+  const dur = () => buffer ? buffer.duration : 0;
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+
+  // ---------- formatting ----------
+  function fmt(t) {
+    if (!isFinite(t)) t = 0;
+    const ms = Math.round(t * 1000);
+    const m = Math.floor(ms / 60000), s = Math.floor(ms % 60000 / 1000), r = ms % 1000;
+    return `${m}:${String(s).padStart(2, '0')}.${String(r).padStart(3, '0')}`;
+  }
+  function parseTime(str) {
+    str = String(str).trim();
+    if (!str) return NaN;
+    const parts = str.split(':').map(Number);
+    if (parts.some(isNaN) || parts.length > 3) return NaN;
+    return parts.reduce((acc, p) => acc * 60 + p, 0);
+  }
+  function setStatus(msg, err) { const s = $('status'); s.textContent = msg; s.className = err ? 'error' : ''; }
+
+  // ---------- loading ----------
+  const drop = $('drop'), fileInput = $('file');
+  drop.addEventListener('click', () => fileInput.click());
+  drop.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); } });
+  fileInput.addEventListener('change', () => { if (fileInput.files[0]) loadFile(fileInput.files[0]); });
+  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) loadFile(f); });
+  window.addEventListener('dragover', e => e.preventDefault());
+  window.addEventListener('drop', e => e.preventDefault());
+
+  async function loadFile(file) {
+    stopPlayback();
+    setStatus('Decoding ' + file.name + '…');
+    try {
+      if (!actx) actx = new AC();
+      const data = await file.arrayBuffer();
+      buffer = await new Promise((res, rej) => actx.decodeAudioData(data, res, rej));
+    } catch (err) {
+      console.error(err);
+      setStatus('Could not decode that file. Try a different format (MP3, WAV, M4A, OGG, FLAC).', true);
+      return;
+    }
+    baseName = file.name.replace(/\.[^.]+$/, '') || 'audio';
+    sel = null; markers = []; playhead = 0;
+    view = { start: 0, end: buffer.duration };
+    $('editor').hidden = false;
+    $('fileinfo').textContent = `${file.name} · ${fmt(buffer.duration)} · ${buffer.numberOfChannels === 1 ? 'mono' : buffer.numberOfChannels + ' ch'} · ${buffer.sampleRate} Hz`;
+    setStatus('');
+    wfDirty = true;
+    refreshUI();
+    resizeCanvas();
+  }
+
+  // ---------- canvas / drawing ----------
+  function resizeCanvas() {
+    dpr = window.devicePixelRatio || 1;
+    cw = canvas.clientWidth; ch = canvas.clientHeight;
+    canvas.width = Math.round(cw * dpr); canvas.height = Math.round(ch * dpr);
+    wf.width = canvas.width; wf.height = canvas.height;
+    wfDirty = true; draw();
+  }
+  window.addEventListener('resize', () => { if (buffer) resizeCanvas(); });
+
+  const t2x = t => (t - view.start) / (view.end - view.start) * cw;
+  const x2t = x => view.start + x / cw * (view.end - view.start);
+
+  function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+  function drawWave() {
+    const g = wf.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, cw, ch);
+    if (!buffer) return;
+    const sr = buffer.sampleRate, len = buffer.length, nch = buffer.numberOfChannels;
+    const chans = []; for (let c = 0; c < nch; c++) chans.push(buffer.getChannelData(c));
+    const top = 18, mid = top + (ch - top) / 2, amp = (ch - top) / 2 * 0.92;
+    g.fillStyle = cssVar('--wave');
+    const vd = view.end - view.start;
+    for (let x = 0; x < cw; x++) {
+      const i0 = Math.floor((view.start + vd * x / cw) * sr);
+      let i1 = Math.floor((view.start + vd * (x + 1) / cw) * sr);
+      if (i0 >= len) break;
+      if (i1 <= i0) i1 = i0 + 1;
+      i1 = Math.min(i1, len);
+      const step = Math.max(1, Math.floor((i1 - i0) / 96));
+      let mn = 1, mx = -1;
+      for (let c = 0; c < nch; c++) {
+        const d = chans[c];
+        for (let i = i0; i < i1; i += step) { const v = d[i]; if (v < mn) mn = v; if (v > mx) mx = v; }
+      }
+      if (mn > mx) continue;
+      const y1 = mid - mx * amp, y2 = mid - mn * amp;
+      g.fillRect(x, y1, 1, Math.max(1, y2 - y1));
+    }
+    g.fillStyle = cssVar('--border');
+    g.fillRect(0, mid, cw, 0.5);
+  }
+
+  function niceStep(span, px) {
+    const target = span / Math.max(1, px / 90);
+    const steps = [.001, .002, .005, .01, .02, .05, .1, .2, .5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
+    return steps.find(s => s >= target) || 3600;
+  }
+
+  function draw() {
+    if (!buffer) return;
+    if (wfDirty) { drawWave(); wfDirty = false; }
+    c2.setTransform(1, 0, 0, 1, 0, 0);
+    c2.clearRect(0, 0, canvas.width, canvas.height);
+    c2.drawImage(wf, 0, 0);
+    c2.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const muted = cssVar('--muted');
+
+    // selection
+    if (sel) {
+      const x1 = t2x(sel.start), x2 = t2x(sel.end);
+      c2.fillStyle = cssVar('--sel');
+      c2.fillRect(x1, 0, x2 - x1, ch);
+      c2.fillStyle = cssVar('--accent');
+      c2.fillRect(x1 - 1, 0, 2, ch);
+      c2.fillRect(x2 - 1, 0, 2, ch);
+    }
+
+    // ruler
+    const span = view.end - view.start, step = niceStep(span, cw);
+    c2.fillStyle = muted; c2.strokeStyle = muted; c2.font = '11px system-ui, sans-serif'; c2.textBaseline = 'top';
+    c2.lineWidth = 1;
+    for (let t = Math.ceil(view.start / step) * step; t < view.end; t += step) {
+      const x = Math.round(t2x(t)) + .5;
+      c2.globalAlpha = .5; c2.beginPath(); c2.moveTo(x, 12); c2.lineTo(x, 18); c2.stroke();
+      c2.globalAlpha = 1;
+      c2.fillText(step < 1 ? fmt(t).replace(/0+$/, '') : fmt(t).slice(0, -4), x + 3, 1);
+    }
+
+    // markers
+    c2.strokeStyle = cssVar('--marker'); c2.fillStyle = cssVar('--marker');
+    c2.setLineDash([4, 3]);
+    markers.forEach((m, i) => {
+      if (m < view.start || m > view.end) return;
+      const x = Math.round(t2x(m)) + .5;
+      c2.beginPath(); c2.moveTo(x, 18); c2.lineTo(x, ch); c2.stroke();
+      c2.setLineDash([]);
+      c2.fillRect(x, 18, 18, 14);
+      c2.fillStyle = cssVar('--panel'); c2.fillText(String(i + 1), x + 4, 20);
+      c2.fillStyle = cssVar('--marker'); c2.setLineDash([4, 3]);
+    });
+    c2.setLineDash([]);
+
+    // playhead
+    if (playhead >= view.start && playhead <= view.end) {
+      const x = Math.round(t2x(playhead)) + .5;
+      c2.strokeStyle = cssVar('--playhead'); c2.lineWidth = 1.5;
+      c2.beginPath(); c2.moveTo(x, 0); c2.lineTo(x, ch); c2.stroke();
+    }
+  }
+
+  // ---------- view (zoom/pan) ----------
+  function setView(s, e) {
+    const d = dur(), minSpan = Math.min(d, 0.005);
+    let span = clamp(e - s, minSpan, d);
+    s = clamp(s, 0, d - span);
+    view = { start: s, end: s + span };
+    wfDirty = true;
+    updatePan(); draw();
+  }
+  function zoomAround(t, factor) {
+    const span = view.end - view.start, ns = span * factor;
+    const frac = (t - view.start) / span;
+    setView(t - frac * ns, t - frac * ns + ns);
+  }
+  function updatePan() {
+    const d = dur(), span = view.end - view.start;
+    const pan = $('pan');
+    pan.disabled = span >= d - 1e-6;
+    pan.value = pan.disabled ? 0 : Math.round(view.start / (d - span) * 1000);
+  }
+  $('pan').addEventListener('input', e => {
+    const d = dur(), span = view.end - view.start;
+    const s = (e.target.value / 1000) * (d - span);
+    view = { start: s, end: s + span }; wfDirty = true; draw();
+  });
+  $('zoomIn').onclick = () => zoomAround((view.start + view.end) / 2, 0.5);
+  $('zoomOut').onclick = () => zoomAround((view.start + view.end) / 2, 2);
+  $('zoomFit').onclick = () => setView(0, dur());
+  $('zoomSel').onclick = () => { if (sel) { const p = (sel.end - sel.start) * 0.05; setView(sel.start - p, sel.end + p); } };
+  canvas.addEventListener('wheel', e => {
+    if (!buffer) return;
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const span = view.end - view.start;
+    if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      const dx = (e.shiftKey ? e.deltaY : e.deltaX) / cw * span;
+      setView(view.start + dx, view.end + dx);
+    } else {
+      zoomAround(x2t(e.clientX - rect.left), e.deltaY > 0 ? 1.25 : 0.8);
+    }
+  }, { passive: false });
+
+  // ---------- pointer interaction ----------
+  let drag = null;
+  const EDGE = 7;
+  canvas.addEventListener('pointerdown', e => {
+    if (!buffer) return;
+    canvas.setPointerCapture(e.pointerId);
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left, t = clamp(x2t(x), 0, dur());
+    if (sel && Math.abs(x - t2x(sel.start)) <= EDGE) drag = { mode: 'start', x0: x, moved: false };
+    else if (sel && Math.abs(x - t2x(sel.end)) <= EDGE) drag = { mode: 'end', x0: x, moved: false };
+    else drag = { mode: 'new', anchor: t, x0: x, moved: false };
+  });
+  canvas.addEventListener('pointermove', e => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left, t = clamp(x2t(x), 0, dur());
+    if (!drag) {
+      const nearEdge = sel && (Math.abs(x - t2x(sel.start)) <= EDGE || Math.abs(x - t2x(sel.end)) <= EDGE);
+      canvas.style.cursor = nearEdge ? 'ew-resize' : 'crosshair';
+      return;
+    }
+    if (Math.abs(x - drag.x0) > 3) drag.moved = true;
+    if (!drag.moved) return;
+    // auto-pan when dragging past edges
+    if (x < 0 || x > cw) {
+      const dx = (x < 0 ? x : x - cw) / cw * (view.end - view.start) * 0.2;
+      setView(view.start + dx, view.end + dx);
+    }
+    if (drag.mode === 'new') {
+      sel = { start: Math.min(drag.anchor, t), end: Math.max(drag.anchor, t) };
+    } else if (drag.mode === 'start') {
+      sel.start = Math.min(t, sel.end);
+      if (t > sel.end) { drag.mode = 'end'; sel.start = sel.end; sel.end = t; }
+    } else {
+      sel.end = Math.max(t, sel.start);
+      if (t < sel.start) { drag.mode = 'start'; sel.end = sel.start; sel.start = t; }
+    }
+    refreshUI(true);
+  });
+  canvas.addEventListener('pointerup', e => {
+    if (!drag) return;
+    if (!drag.moved) {
+      const rect = canvas.getBoundingClientRect();
+      const t = clamp(x2t(e.clientX - rect.left), 0, dur());
+      if (playInfo) { play(t); } else { playhead = t; }
+      refreshUI(true);
+    } else if (sel && sel.end - sel.start < 0.001) { sel = null; refreshUI(); }
+    drag = null;
+  });
+
+  // ---------- playback ----------
+  function ensureCtx() { if (!actx) actx = new AC(); if (actx.state === 'suspended') actx.resume(); }
+
+  function play(startAt) {
+    if (!buffer) return;
+    ensureCtx();
+    stopSource();
+    let from, to;
+    const loop = $('loop').checked;
+    if (sel) {
+      to = sel.end;
+      from = (startAt != null) ? startAt : playhead;
+      if (from < sel.start || from >= sel.end - 0.01) from = sel.start;
+    } else {
+      to = dur();
+      from = (startAt != null) ? startAt : playhead;
+      if (from >= dur() - 0.01) from = 0;
+    }
+    const s = actx.createBufferSource();
+    s.buffer = buffer; s.connect(actx.destination);
+    if (loop && sel) {
+      s.loop = true; s.loopStart = sel.start; s.loopEnd = sel.end;
+      s.start(0, from);
+    } else {
+      s.start(0, from, Math.max(0.001, to - from));
+    }
+    s.onended = () => { if (src === s) { src = null; playInfo = null; playhead = (sel && !loop) ? sel.start : Math.min(to, dur()); setPlayLabel(); } };
+    src = s;
+    playInfo = { t0: actx.currentTime, from, to, loop: loop && !!sel, ls: sel ? sel.start : 0, le: sel ? sel.end : 0 };
+    setPlayLabel();
+    cancelAnimationFrame(rafId);
+    tick();
+  }
+  function stopSource() {
+    if (src) { src.onended = null; try { src.stop(); } catch (_) {} src.disconnect(); src = null; }
+    playInfo = null;
+  }
+  function stopPlayback(reset) {
+    stopSource();
+    cancelAnimationFrame(rafId);
+    if (reset && buffer) playhead = sel ? sel.start : 0;
+    setPlayLabel();
+    if (buffer) draw();
+  }
+  function pausePlayback() {
+    if (!playInfo) return;
+    playhead = currentPlayTime();
+    stopSource(); cancelAnimationFrame(rafId); setPlayLabel(); draw();
+  }
+  function currentPlayTime() {
+    const p = playInfo; if (!p) return playhead;
+    const el = actx.currentTime - p.t0;
+    if (p.loop) {
+      const L = p.le - p.ls;
+      let t = p.from + el;
+      if (t >= p.le) t = p.ls + ((t - p.ls) % L);
+      return t;
+    }
+    return Math.min(p.to, p.from + el);
+  }
+  function tick() {
+    if (!playInfo) return;
+    playhead = currentPlayTime();
+    // keep playhead in view
+    const span = view.end - view.start;
+    if (playhead > view.end || playhead < view.start) setView(playhead - span * 0.1, playhead - span * 0.1 + span);
+    draw();
+    rafId = requestAnimationFrame(tick);
+  }
+  function setPlayLabel() { $('play').textContent = playInfo ? '❚❚ Pause' : '▶ Play'; }
+
+  $('play').onclick = () => playInfo ? pausePlayback() : play();
+  $('stop').onclick = () => stopPlayback(true);
+  $('loop').onchange = () => { if (playInfo) play(currentPlayTime()); };
+
+  // ---------- selection / markers UI ----------
+  function refreshUI(light) {
+    if (!buffer) return;
+    const a = $('selStart'), b = $('selEnd');
+    if (document.activeElement !== a) a.value = sel ? fmt(sel.start) : '';
+    if (document.activeElement !== b) b.value = sel ? fmt(sel.end) : '';
+    $('selLen').textContent = sel ? `Length ${fmt(sel.end - sel.start)}` : 'No selection';
+    const has = !!sel && sel.end - sel.start > 0.001;
+    $('expTrim').disabled = !has;
+    $('expCut').disabled = !has || (sel.end - sel.start >= dur() - 0.001);
+    $('zoomSel').disabled = !has;
+    $('markerSel').disabled = !has;
+    $('selClear').disabled = !sel;
+    $('clearMarkers').disabled = !markers.length;
+    $('expZip').disabled = !markers.length;
+    if (!light) renderSegments(); else if (!$('segments').firstChild) renderSegments();
+    updatePan();
+    draw();
+  }
+
+  function applySelInput() {
+    let s = parseTime($('selStart').value), e = parseTime($('selEnd').value);
+    if (isNaN(s) && isNaN(e)) { refreshUI(); return; }
+    if (isNaN(s)) s = sel ? sel.start : 0;
+    if (isNaN(e)) e = sel ? sel.end : dur();
+    s = clamp(s, 0, dur()); e = clamp(e, 0, dur());
+    if (s > e) [s, e] = [e, s];
+    sel = e - s > 0.0005 ? { start: s, end: e } : null;
+    refreshUI();
+  }
+  $('selStart').addEventListener('change', applySelInput);
+  $('selEnd').addEventListener('change', applySelInput);
+  $('selAll').onclick = () => { sel = { start: 0, end: dur() }; refreshUI(); };
+  $('selClear').onclick = () => { sel = null; refreshUI(); };
+
+  function addMarker(t) {
+    t = clamp(t, 0, dur());
+    if (t < 0.001 || t > dur() - 0.001) return;
+    if (markers.some(m => Math.abs(m - t) < 0.001)) return;
+    markers.push(t); markers.sort((a, b) => a - b);
+    refreshUI();
+  }
+  $('addMarker').onclick = () => addMarker(playInfo ? currentPlayTime() : playhead);
+  $('markerSel').onclick = () => { if (sel) { addMarker(sel.start); addMarker(sel.end); } };
+  $('clearMarkers').onclick = () => { markers = []; refreshUI(); };
+
+  function segmentList() {
+    const pts = [0, ...markers, dur()], out = [];
+    for (let i = 0; i < pts.length - 1; i++) out.push({ start: pts[i], end: pts[i + 1] });
+    return out;
+  }
+  function renderSegments() {
+    const box = $('segments');
+    box.textContent = '';
+    if (!markers.length) {
+      const p = document.createElement('div');
+      p.className = 'empty';
+      p.textContent = 'No markers yet. Add markers to split the file into separate pieces.';
+      box.appendChild(p); return;
+    }
+    const tbl = document.createElement('table');
+    tbl.innerHTML = '<thead><tr><th>#</th><th>Start</th><th>End</th><th>Length</th><th></th></tr></thead>';
+    const tb = document.createElement('tbody');
+    segmentList().forEach((seg, i) => {
+      const tr = document.createElement('tr');
+      const cells = [String(i + 1), fmt(seg.start), fmt(seg.end), fmt(seg.end - seg.start)];
+      cells.forEach(txt => { const td = document.createElement('td'); td.textContent = txt; tr.appendChild(td); });
+      const td = document.createElement('td'); td.className = 'actions';
+      const bPlay = mkBtn('▶', () => { sel = { start: seg.start, end: seg.end }; playhead = seg.start; refreshUI(true); play(seg.start); }, 'Preview piece');
+      const bDl = mkBtn('Download', () => downloadRange(seg.start, seg.end, `part-${pad(i + 1, segmentList().length)}`), 'Download this piece');
+      td.append(bPlay, ' ', bDl);
+      if (i < markers.length) td.append(' ', mkBtn('Remove marker ' + (i + 1), () => { markers.splice(i, 1); refreshUI(); }, 'Remove the marker after this piece', 'danger'));
+      tr.appendChild(td); tb.appendChild(tr);
+    });
+    tbl.appendChild(tb); box.appendChild(tbl);
+  }
+  function mkBtn(label, fn, title, cls) {
+    const b = document.createElement('button');
+    b.className = 'small' + (cls ? ' ' + cls : '');
+    b.textContent = label; b.title = title || ''; b.onclick = fn; return b;
+  }
+  const pad = (n, total) => String(n).padStart(Math.max(2, String(total).length), '0');
+
+  // ---------- keyboard ----------
+  window.addEventListener('keydown', e => {
+    if (!buffer) return;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.code === 'Space') { e.preventDefault(); $('play').click(); }
+    else if (e.key === 'm' || e.key === 'M') addMarker(playInfo ? currentPlayTime() : playhead);
+    else if (e.key === 'i' || e.key === 'I') { const t = playInfo ? currentPlayTime() : playhead; sel = { start: t, end: Math.max(t, sel ? sel.end : dur()) }; refreshUI(); }
+    else if (e.key === 'o' || e.key === 'O') { const t = playInfo ? currentPlayTime() : playhead; sel = { start: Math.min(t, sel ? sel.start : 0), end: t }; refreshUI(); }
+  });
+
+  // ---------- export ----------
+  function getChannels(parts) {
+    // parts: array of [startSec, endSec]; returns Float32Array[] concatenated
+    const sr = buffer.sampleRate, nch = buffer.numberOfChannels;
+    const ranges = parts.map(([a, b]) => {
+      const i0 = clamp(Math.round(a * sr), 0, buffer.length), i1 = clamp(Math.round(b * sr), i0, buffer.length);
+      return [i0, i1];
+    });
+    const total = ranges.reduce((n, [a, b]) => n + (b - a), 0);
+    const out = [];
+    for (let c = 0; c < nch; c++) {
+      const d = buffer.getChannelData(c), o = new Float32Array(total);
+      let pos = 0;
+      for (const [a, b] of ranges) { o.set(d.subarray(a, b), pos); pos += b - a; }
+      out.push(o);
+    }
+    return out;
+  }
+  function applyFades(chans) {
+    const sr = buffer.sampleRate;
+    const fi = Math.max(0, +$('fadeIn').value || 0), fo = Math.max(0, +$('fadeOut').value || 0);
+    const len = chans[0].length;
+    const ni = Math.min(Math.round(fi / 1000 * sr), len), no = Math.min(Math.round(fo / 1000 * sr), len);
+    for (const d of chans) {
+      for (let i = 0; i < ni; i++) d[i] *= i / ni;
+      for (let i = 0; i < no; i++) d[len - 1 - i] *= i / no;
+    }
+  }
+  function encodeWav(chans, sr, bits) {
+    const nch = chans.length, len = chans[0].length;
+    const bytes = bits / 8, float = bits === 32;
+    const dataSize = len * nch * bytes;
+    const ab = new ArrayBuffer(44 + dataSize), dv = new DataView(ab);
+    const wstr = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+    wstr(0, 'RIFF'); dv.setUint32(4, 36 + dataSize, true); wstr(8, 'WAVE');
+    wstr(12, 'fmt '); dv.setUint32(16, 16, true); dv.setUint16(20, float ? 3 : 1, true);
+    dv.setUint16(22, nch, true); dv.setUint32(24, sr, true);
+    dv.setUint32(28, sr * nch * bytes, true); dv.setUint16(32, nch * bytes, true); dv.setUint16(34, bits, true);
+    wstr(36, 'data'); dv.setUint32(40, dataSize, true);
+    let o = 44;
+    for (let i = 0; i < len; i++) {
+      for (let c = 0; c < nch; c++) {
+        let v = chans[c][i];
+        if (float) { dv.setFloat32(o, v, true); }
+        else {
+          v = clamp(v, -1, 1);
+          if (bits === 16) dv.setInt16(o, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+          else { const n = Math.round(v < 0 ? v * 0x800000 : v * 0x7fffff); dv.setUint8(o, n & 255); dv.setUint8(o + 1, (n >> 8) & 255); dv.setUint8(o + 2, (n >> 16) & 255); }
+        }
+        o += bytes;
+      }
+    }
+    return new Uint8Array(ab);
+  }
+  function fmtInfo() {
+    const v = $('fmt').value;
+    return v.startsWith('mp3-')
+      ? { mp3: true, kbps: +v.slice(4), ext: 'mp3', mime: 'audio/mpeg' }
+      : { mp3: false, bits: +v, ext: 'wav', mime: 'audio/wav' };
+  }
+  const MP3_RATES = [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000];
+  async function encodeMp3(chans, sr, kbps) {
+    if (typeof lamejs === 'undefined' || !lamejs.Mp3Encoder) throw new Error('MP3 encoder did not load. Make sure lame.min.js sits next to index.html.');
+    if (!MP3_RATES.includes(sr)) throw new Error(`MP3 doesn't support a ${sr} Hz sample rate. Choose WAV instead.`);
+    const nch = Math.min(2, chans.length), len = chans[0].length;
+    const enc = new lamejs.Mp3Encoder(nch, sr, kbps);
+    const toI16 = (f, a, b) => {
+      const o = new Int16Array(b - a);
+      for (let i = a; i < b; i++) { const v = clamp(f[i], -1, 1); o[i - a] = v < 0 ? v * 0x8000 : v * 0x7fff; }
+      return o;
+    };
+    const out = []; let total = 0;
+    const push = b => { if (b.length) { out.push(b); total += b.length; } };
+    const BLOCK = 1152 * 8;
+    for (let i = 0, n = 0; i < len; i += BLOCK, n++) {
+      const e = Math.min(len, i + BLOCK);
+      push(nch === 1 ? enc.encodeBuffer(toI16(chans[0], i, e)) : enc.encodeBuffer(toI16(chans[0], i, e), toI16(chans[1], i, e)));
+      if (n % 40 === 39) { setStatus(`Encoding MP3… ${Math.round(e / len * 100)}%`); await new Promise(r => setTimeout(r)); }
+    }
+    push(enc.flush());
+    const res = new Uint8Array(total); let pos = 0;
+    for (const b of out) { res.set(new Uint8Array(b.buffer, b.byteOffset, b.length), pos); pos += b.length; }
+    return res;
+  }
+  async function renderAudio(parts) {
+    const chans = getChannels(parts);
+    applyFades(chans);
+    const f = fmtInfo();
+    return f.mp3 ? encodeMp3(chans, buffer.sampleRate, f.kbps) : encodeWav(chans, buffer.sampleRate, f.bits);
+  }
+  function download(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+  async function busy(label, fn) {
+    setStatus(label);
+    await new Promise(r => setTimeout(r, 20));   // let the UI paint
+    try { await fn(); setStatus('Done.'); setTimeout(() => { if ($('status').textContent === 'Done.') setStatus(''); }, 2500); }
+    catch (err) { console.error(err); setStatus('Export failed: ' + err.message, true); }
+  }
+  function downloadRange(a, b, suffix) {
+    const f = fmtInfo();
+    busy('Encoding…', async () => download(new Blob([await renderAudio([[a, b]])], { type: f.mime }), `${baseName}-${suffix}.${f.ext}`));
+  }
+  $('expTrim').onclick = () => { if (sel) downloadRange(sel.start, sel.end, 'trim'); };
+  $('expCut').onclick = () => {
+    if (!sel) return;
+    const f = fmtInfo();
+    busy('Encoding…', async () => {
+      const parts = [[0, sel.start], [sel.end, dur()]].filter(([a, b]) => b - a > 0);
+      download(new Blob([await renderAudio(parts)], { type: f.mime }), `${baseName}-cut.${f.ext}`);
+    });
+  };
+  $('expZip').onclick = () => {
+    if (!markers.length) return;
+    const f = fmtInfo();
+    busy('Encoding slices…', async () => {
+      const segs = segmentList(), files = [];
+      for (let i = 0; i < segs.length; i++) {
+        setStatus(`Encoding piece ${i + 1} of ${segs.length}…`);
+        await new Promise(r => setTimeout(r));
+        files.push({ name: `${baseName}-part-${pad(i + 1, segs.length)}.${f.ext}`, data: await renderAudio([[segs[i].start, segs[i].end]]) });
+      }
+      download(new Blob([makeZip(files)], { type: 'application/zip' }), `${baseName}-slices.zip`);
+    });
+  };
+
+  // minimal ZIP writer (store, no compression)
+  const crcTable = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+  function crc32(u8) { let c = 0xffffffff; for (let i = 0; i < u8.length; i++) c = crcTable[(c ^ u8[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+  function makeZip(files) {
+    const enc = new TextEncoder(), chunks = [], central = [];
+    let offset = 0;
+    for (const f of files) {
+      const name = enc.encode(f.name), crc = crc32(f.data), size = f.data.length;
+      const lh = new DataView(new ArrayBuffer(30));
+      lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
+      lh.setUint16(10, 0, true); lh.setUint16(12, 33, true);
+      lh.setUint32(14, crc, true); lh.setUint32(18, size, true); lh.setUint32(22, size, true);
+      lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
+      chunks.push(new Uint8Array(lh.buffer), name, f.data);
+      const ch = new DataView(new ArrayBuffer(46));
+      ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+      ch.setUint16(10, 0, true); ch.setUint16(12, 0, true); ch.setUint16(14, 33, true);
+      ch.setUint32(16, crc, true); ch.setUint32(20, size, true); ch.setUint32(24, size, true);
+      ch.setUint16(28, name.length, true); ch.setUint32(42, offset, true);
+      central.push(new Uint8Array(ch.buffer), name);
+      offset += 30 + name.length + size;
+    }
+    const cdSize = central.reduce((n, c) => n + c.length, 0);
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true);
+    end.setUint32(12, cdSize, true); end.setUint32(16, offset, true);
+    return new Blob([...chunks, ...central, new Uint8Array(end.buffer)]);
+  }
+})();
+</script>
+</body>
+</html>
